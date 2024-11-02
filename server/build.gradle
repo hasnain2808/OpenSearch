@@ -69,6 +69,7 @@ dependencies {
   api project(":libs:opensearch-geo")
   api project(":libs:opensearch-telemetry")
   api project(":libs:opensearch-task-commons")
+  testImplementation project(path: ':modules:analysis-common')
 
 
   compileOnly project(':libs:opensearch-plugin-classloader')

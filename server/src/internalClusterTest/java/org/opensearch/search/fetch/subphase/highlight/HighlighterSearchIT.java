@@ -47,6 +47,7 @@ import org.opensearch.action.index.IndexRequestBuilder;
 import org.opensearch.action.search.SearchRequestBuilder;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.support.WriteRequest;
+import org.opensearch.analysis.common.CommonAnalysisModulePlugin;
 import org.opensearch.common.geo.GeoPoint;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.Settings.Builder;
@@ -75,7 +76,6 @@ import org.opensearch.search.fetch.subphase.highlight.HighlightBuilder.Field;
 import org.opensearch.search.sort.SortBuilders;
 import org.opensearch.search.sort.SortOrder;
 import org.opensearch.test.InternalSettingsPlugin;
-import org.opensearch.test.MockKeywordPlugin;
 import org.opensearch.test.ParameterizedStaticSettingsOpenSearchIntegTestCase;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
@@ -150,7 +150,7 @@ public class HighlighterSearchIT extends ParameterizedStaticSettingsOpenSearchIn
 
     @Override
     protected Collection<Class<? extends Plugin>> nodePlugins() {
-        return Arrays.asList(InternalSettingsPlugin.class, MockKeywordPlugin.class, MockAnalysisPlugin.class);
+        return Arrays.asList(InternalSettingsPlugin.class, MockAnalysisPlugin.class, CommonAnalysisModulePlugin.class);
     }
 
     public void testHighlightingWithKeywordIgnoreBoundaryScanner() throws IOException, InterruptedException {
@@ -1283,6 +1283,49 @@ public class HighlighterSearchIT extends ParameterizedStaticSettingsOpenSearchIn
             // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
             assertHighlight(searchResponse, i, "field1", 0, 1, equalTo("<em>test</em> " + hit.getId()));
         }
+    }
+
+    public void testSynonymGraphHighlighting() throws Exception {
+    Settings.Builder settings = Settings.builder();
+        settings.put(indexSettings());
+        settings.put("index.analysis.filter.synonyms_filter.type", "synonym_graph");
+        settings.putList("index.analysis.filter.synonyms_filter.synonyms", "ac, access control");
+        settings.put("index.analysis.analyzer.custom_synonym_analyzer.type", "custom");
+        settings.put("index.analysis.analyzer.custom_synonym_analyzer.tokenizer", "standard");
+        settings.putList("index.analysis.analyzer.custom_synonym_analyzer.filter", "synonyms_filter");
+        assertAcked(
+            prepareCreate("test").setSettings(settings)
+                .setMapping(
+                    XContentFactory.jsonBuilder()
+                        .startObject()
+                        .startObject("properties")
+                        .startObject("highlight_field")
+                        .field("type", "text")
+                        .field("term_vector", "with_positions_offsets")
+                        .field("store", true)
+                        .field("analyzer", "custom_synonym_analyzer")
+                        .endObject()
+                        .endObject()
+                        .endObject()
+                )
+        );
+        ensureGreen();
+
+        index("test", "type1", "1", "highlight_field", "Managing access control for simple access without complex logic.");
+        refresh();
+
+        for (String highlighterType : ALL_TYPES) {
+            this.testSynonymGraphHighlightingForHighligter(highlighterType);
+        }
+    }
+
+    private void testSynonymGraphHighlightingForHighligter(String highlighterType) {
+        SearchResponse search = client().prepareSearch()
+            .setQuery(matchQuery("highlight_field", "ac"))
+            .highlighter(new HighlightBuilder().field("highlight_field", 400).highlighterType(highlighterType))
+            .get();
+
+        assertThat(search.getHits().getHits()[0].getHighlightFields().get("highlight_field").getFragments()[0].string(), not(containsString("<em>access</em>")));
     }
 
     public XContentBuilder type1TermVectorMapping() throws IOException {
