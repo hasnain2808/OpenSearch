@@ -724,6 +724,18 @@ public abstract class ParseContext implements Iterable<ParseContext.Document> {
         };
     }
 
+    /**
+     * Return a new context that will use the provided parser.
+     */
+    public final ParseContext withParser(final XContentParser newParser) {
+        return new FilterParseContext(this) {
+            @Override
+            public XContentParser parser() {
+                return newParser;
+            }
+        };
+    }
+
     public boolean isWithinMultiFields() {
         return false;
     }

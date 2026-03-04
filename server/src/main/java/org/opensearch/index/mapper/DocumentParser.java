@@ -43,7 +43,11 @@ import org.opensearch.common.time.DateFormatter;
 import org.opensearch.common.xcontent.LoggingDeprecationHandler;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.MediaType;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.mapper.DynamicTemplate.XContentFieldType;
@@ -766,14 +770,69 @@ final class DocumentParser {
         if (mapper instanceof ObjectMapper objectMapper) {
             parseObjectMapper(context, objectMapper);
         } else if (mapper instanceof FieldMapper fieldMapper) {
-            fieldMapper.parse(context);
-            parseCopyFields(context, fieldMapper.copyTo().copyToFields());
+            List<String> copyToFields = fieldMapper.copyTo().copyToFields();
+            XContentParser.Token token = context.parser().currentToken();
+            if (!context.isWithinCopyTo()
+                && !copyToFields.isEmpty()
+                && (token == XContentParser.Token.START_ARRAY || token == XContentParser.Token.START_OBJECT)) {
+                parseMultiTokenFieldWithCopyTo(context, fieldMapper, copyToFields);
+            } else {
+                fieldMapper.parse(context);
+                parseCopyFields(context, copyToFields);
+            }
         } else if (mapper instanceof FieldAliasMapper) {
             throw new IllegalArgumentException("Cannot write to a field alias [" + mapper.name() + "].");
         } else {
             throw new IllegalStateException(
                 "The provided mapper [" + mapper.name() + "] has an unrecognized type [" + mapper.getClass().getSimpleName() + "]."
             );
+        }
+    }
+
+    /**
+     * Like {@code parse + parseCopyFields}, but for multi-token values (arrays/objects).
+     * Captures the value bytes first so each consumer gets its own parser.
+     */
+    private static void parseMultiTokenFieldWithCopyTo(ParseContext context, FieldMapper fieldMapper, List<String> copyToFields)
+        throws IOException {
+        XContentParser originalParser = context.parser();
+
+        // snapshot the value and advance the original parser past it
+        final BytesReference capturedBytes;
+        try (XContentBuilder builder = XContentBuilder.builder(originalParser.contentType().xContent())) {
+            builder.copyCurrentStructure(originalParser);
+            capturedBytes = BytesReference.bytes(builder);
+        }
+
+        final NamedXContentRegistry registry = originalParser.getXContentRegistry();
+        final DeprecationHandler deprecationHandler = originalParser.getDeprecationHandler();
+        final MediaType mediaType = originalParser.contentType();
+
+        // replay for the original field
+        try (XContentParser replayParser = mediaType.xContent().createParser(registry, deprecationHandler, capturedBytes.streamInput())) {
+            replayParser.nextToken();
+            fieldMapper.parse(context.withParser(replayParser));
+        }
+
+        // replay for each copy_to target (document-routing mirrors parseCopyFields)
+        ParseContext copyToContext = context.createCopyToContext();
+        for (String field : copyToFields) {
+            ParseContext.Document targetDoc = null;
+            for (ParseContext.Document doc = copyToContext.doc(); doc != null; doc = doc.getParent()) {
+                if (field.startsWith(doc.getPrefix())) {
+                    targetDoc = doc;
+                    break;
+                }
+            }
+            assert targetDoc != null;
+            ParseContext fieldContext = (targetDoc == copyToContext.doc()) ? copyToContext : copyToContext.switchDoc(targetDoc);
+
+            try (
+                XContentParser replayParser = mediaType.xContent().createParser(registry, deprecationHandler, capturedBytes.streamInput())
+            ) {
+                replayParser.nextToken();
+                parseCopy(field, fieldContext.withParser(replayParser));
+            }
         }
     }
 
