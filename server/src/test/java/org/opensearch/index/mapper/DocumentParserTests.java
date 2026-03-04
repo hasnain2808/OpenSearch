@@ -3505,4 +3505,84 @@ public class DocumentParserTests extends MapperServiceTestCase {
         // Null fields should not be created
         assertNull("Null field should not be created", doc.rootDoc().getField("mixed_nulls.null_field"));
     }
+
+    // copy_to with multi-token field values (arrays/objects)
+    // https://github.com/opensearch-project/OpenSearch/issues/20540
+
+    public void testCopyToWithGeoPointAsObject() throws Exception {
+        DocumentMapper mapper = createDocumentMapper(mapping(b -> {
+            b.startObject("point");
+            {
+                b.field("type", "geo_point");
+                b.field("copy_to", "point_copy");
+            }
+            b.endObject();
+            b.startObject("point_copy").field("type", "geo_point").endObject();
+        }));
+
+        ParsedDocument doc = mapper.parse(source(b -> b.startObject("point").field("lat", 40.71).field("lon", -74.00).endObject()));
+
+        assertThat(doc.rootDoc().getField("point"), notNullValue());
+        assertThat(doc.rootDoc().getField("point_copy"), notNullValue());
+        assertEquals(doc.rootDoc().getFields("point").length, doc.rootDoc().getFields("point_copy").length);
+    }
+
+    public void testCopyToWithGeoPointAsArray() throws Exception {
+        DocumentMapper mapper = createDocumentMapper(mapping(b -> {
+            b.startObject("point");
+            {
+                b.field("type", "geo_point");
+                b.field("copy_to", "point_copy");
+            }
+            b.endObject();
+            b.startObject("point_copy").field("type", "geo_point").endObject();
+        }));
+
+        ParsedDocument doc = mapper.parse(source(b -> b.startArray("point").value(-74.00).value(40.71).endArray()));
+
+        assertThat(doc.rootDoc().getField("point"), notNullValue());
+        assertThat(doc.rootDoc().getField("point_copy"), notNullValue());
+        assertEquals(doc.rootDoc().getFields("point").length, doc.rootDoc().getFields("point_copy").length);
+    }
+
+    // string format is single-token, regression test for the existing path
+    public void testCopyToWithGeoPointAsString() throws Exception {
+        DocumentMapper mapper = createDocumentMapper(mapping(b -> {
+            b.startObject("point");
+            {
+                b.field("type", "geo_point");
+                b.field("copy_to", "point_copy");
+            }
+            b.endObject();
+            b.startObject("point_copy").field("type", "geo_point").endObject();
+        }));
+
+        ParsedDocument doc = mapper.parse(source(b -> b.field("point", "40.71,-74.00")));
+
+        assertThat(doc.rootDoc().getField("point"), notNullValue());
+        assertThat(doc.rootDoc().getField("point_copy"), notNullValue());
+        assertEquals(doc.rootDoc().getFields("point").length, doc.rootDoc().getFields("point_copy").length);
+    }
+
+    public void testCopyToMultipleTargetsWithMultiTokenField() throws Exception {
+        DocumentMapper mapper = createDocumentMapper(mapping(b -> {
+            b.startObject("point");
+            {
+                b.field("type", "geo_point");
+                b.startArray("copy_to").value("point_copy1").value("point_copy2").endArray();
+            }
+            b.endObject();
+            b.startObject("point_copy1").field("type", "geo_point").endObject();
+            b.startObject("point_copy2").field("type", "geo_point").endObject();
+        }));
+
+        ParsedDocument doc = mapper.parse(source(b -> b.startObject("point").field("lat", 40.71).field("lon", -74.00).endObject()));
+
+        assertThat(doc.rootDoc().getField("point"), notNullValue());
+        assertThat(doc.rootDoc().getField("point_copy1"), notNullValue());
+        assertThat(doc.rootDoc().getField("point_copy2"), notNullValue());
+        int sourceFieldCount = doc.rootDoc().getFields("point").length;
+        assertEquals(sourceFieldCount, doc.rootDoc().getFields("point_copy1").length);
+        assertEquals(sourceFieldCount, doc.rootDoc().getFields("point_copy2").length);
+    }
 }
